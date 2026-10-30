@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Riesgo agroclimático Maule</title>
+<style>
+:root{--bg:#fff;--fg:#1b1f23;--mut:#6a737d;--bd:#d8dee4;--ok:#e6f4ea;--l:#fff3cd;--m:#ffd8a8;--h:#ffb3b3;--blue:#2166ac}
+@media(prefers-color-scheme:dark){:root{--bg:#14181c;--fg:#e6edf3;--mut:#8b949e;--bd:#30363d;--ok:#12301d;--l:#4a3f10;--m:#5a3a10;--h:#5c1f1f;--blue:#6aa9e8}}
+body{margin:0;padding:16px;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,sans-serif}
+h1{font-size:18px;margin:0 0 4px}.mut{color:var(--mut);font-size:12px}
+.bar{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:12px 0}
+select,input{background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:6px;padding:4px 8px}
+table{border-collapse:collapse;width:100%}th,td{padding:5px 8px;border-bottom:1px solid var(--bd);text-align:left;white-space:nowrap}
+th{position:sticky;top:0;background:var(--bg);cursor:pointer}tr:hover{background:rgba(127,127,127,.08)}tbody tr{cursor:pointer}
+.c{padding:1px 8px;border-radius:10px;font-size:12px}.sin{background:var(--ok)}.leve{background:var(--l)}.moderada,.moderado,.alerta{background:var(--m)}.severa,.severo{background:var(--h)}.peligro{background:var(--h)}
+.wrap{overflow-x:auto;max-height:55vh;border:1px solid var(--bd);border-radius:8px}
+#chart{margin-top:16px;border:1px solid var(--bd);border-radius:8px;padding:8px}
+.warn{background:var(--l);padding:6px 10px;border-radius:6px;font-size:12px;margin:8px 0}
+</style></head><body>
+<h1>Riesgo agroclimático — Región del Maule</h1>
+<div class="mut" id="meta">cargando…</div>
+<div class="warn" id="warn" hidden></div>
+<div class="bar">
+  <label>Fecha <input type="date" id="date"></label>
+  <label>Ver <select id="mode"><option value="hoy">Resumen del día</option><option value="helada">Eventos: heladas</option><option value="golpe_calor">Eventos: golpes de calor</option><option value="frio">Frío invernal (may–ago)</option></select></label>
+  <label id="rng" hidden>Rango <input type="date" id="d0"> – <input type="date" id="d1"></label>
+</div>
+<div class="wrap"><table><thead id="th"></thead><tbody id="tb"></tbody></table></div>
+<div id="chart" hidden><b id="ct"></b><div id="svg"></div><div class="mut">Tmin/Tmax diarias; línea punteada = umbral helada (0 °C) y golpe de calor (29 °C).</div></div>
+<script>
+const $=id=>document.getElementById(id), api=p=>fetch(p).then(r=>r.ok?r.json():Promise.reject(r.status));
+const cls=v=>!v?'':`<span class="c ${v.split(' ')[0]==='sin'||v==='sin estrés'?'sin':v.split('/')[0].split(' ')[0]}">${v}</span>`;
+let rows=[],cols=[],sortK=null,sortD=1;
+function render(){
+  $('th').innerHTML='<tr>'+cols.map(c=>`<th data-k="${c.k}">${c.t}</th>`).join('')+'</tr>';
+  const r=[...rows]; if(sortK) r.sort((a,b)=>((a[sortK]??-1e9)>(b[sortK]??-1e9)?1:-1)*sortD);
+  $('tb').innerHTML=r.map(x=>`<tr data-id="${x.id}">`+cols.map(c=>`<td>${c.f?c.f(x[c.k],x):(x[c.k]??'—')}</td>`).join('')+'</tr>').join('');
+  document.querySelectorAll('th').forEach(h=>h.onclick=()=>{sortD=sortK===h.dataset.k?-sortD:1;sortK=h.dataset.k;render()});
+  document.querySelectorAll('tbody tr').forEach(t=>t.onclick=()=>station(t.dataset.id));
+}
+async function load(){
+  const m=$('mode').value; $('rng').hidden=!(m==='helada'||m==='golpe_calor');
+  try{
+    if(m==='hoy'){rows=await api('/api/risk/summary?date='+$('date').value);
+      cols=[{k:'name',t:'Estación'},{k:'comuna',t:'Comuna'},{k:'provider',t:'Fuente'},{k:'tmin',t:'Tmin °C'},{k:'tmax',t:'Tmax °C'},{k:'helada',t:'Helada',f:cls},{k:'golpe_calor',t:'Golpe calor',f:cls},{k:'thi_max',t:'THI máx'},{k:'estres_animal',t:'Estrés animal',f:cls},{k:'pp',t:'PP mm'},{k:'status',t:'Dato'}];}
+    else if(m==='frio'){rows=await api('/api/chill/season?year='+$('date').value.slice(0,4));
+      cols=[{k:'name',t:'Estación'},{k:'comuna',t:'Comuna'},{k:'horas_frio',t:'Horas frío'},{k:'unidades_utah',t:'Unidades Utah'},{k:'hasta',t:'Hasta'}];}
+    else{rows=await api(`/api/frost/events?kind=${m}&start=${$('d0').value}&end=${$('d1').value}`);
+      cols=[{k:'name',t:'Estación'},{k:'comuna',t:'Comuna'},{k:'dias_evento',t:'Días con evento'},{k:'dias_validos',t:'Días válidos'},{k:'peor',t:m==='helada'?'Tmin mínima °C':'Tmax máxima °C'}];}
+    sortK=null;render();
+  }catch(e){$('tb').innerHTML='<tr><td>Error '+e+' (¿hay datos cargados?)</td></tr>';}
+}
+async function station(id){
+  const d=await api(`/api/station/${id}/daily?start=${$('d0').value}&end=${$('d1').value}`);
+  const R=d.rows.filter(r=>r.tmin!=null&&r.tmax!=null); if(!R.length)return;
+  $('chart').hidden=false;$('ct').textContent=rows.find(x=>x.id===id)?.name+' — '+id;
+  const W=900,H=240,p=30,lo=Math.min(-4,...R.map(r=>r.tmin)),hi=Math.max(32,...R.map(r=>r.tmax));
+  const X=i=>p+i*(W-2*p)/Math.max(R.length-1,1),Y=v=>H-p-(v-lo)*(H-2*p)/(hi-lo);
+  const pl=k=>R.map((r,i)=>X(i)+','+Y(r[k])).join(' ');
+  $('svg').innerHTML=`<svg viewBox="0 0 ${W} ${H}" width="100%"><g stroke="currentColor" opacity=".35" stroke-dasharray="4 3"><line x1="${p}" x2="${W-p}" y1="${Y(0)}" y2="${Y(0)}"/><line x1="${p}" x2="${W-p}" y1="${Y(29)}" y2="${Y(29)}"/></g>
+  <polyline fill="none" stroke="#2166ac" stroke-width="1.5" points="${pl('tmin')}"/><polyline fill="none" stroke="#b2182b" stroke-width="1.5" points="${pl('tmax')}"/>
+  <text x="${p}" y="12" font-size="11" fill="currentColor">${R[0].date} → ${R.at(-1).date} · azul=Tmin rojo=Tmax · ${lo.toFixed(0)}…${hi.toFixed(0)} °C</text></svg>`;
+}
+(async()=>{
+  const m=await api('/api/meta'); $('meta').textContent=`${m.stations_with_data} estaciones con datos · ${m.first_ts} → ${m.last_ts} · BD: ${m.db}`;
+  if(m.db.includes('demo')){$('warn').hidden=false;$('warn').textContent='DATOS SINTÉTICOS DE DEMOSTRACIÓN — no representan condiciones reales.';}
+  const last=(m.last_ts||'').slice(0,10); $('date').value=last; $('d1').value=last;
+  const d0=new Date(last);d0.setDate(d0.getDate()-30);$('d0').value=isNaN(d0)?'':d0.toISOString().slice(0,10);
+  ['date','mode','d0','d1'].forEach(i=>$(i).onchange=load); load();
+})();
+</script></body></html>
